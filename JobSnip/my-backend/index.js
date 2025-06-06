@@ -7,12 +7,12 @@ const port = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Initialize OpenAI client
+
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// POST /analyze endpoint
+
 app.post('/analyze', async (req, res) => {
   try {
     const { prompt } = req.body;
