@@ -1,12 +1,15 @@
 import React, { useState } from 'react';
 import './index.css';  
+import * as pdfjsLib from 'pdfjs-dist';
+pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
+import mammoth from 'mammoth';
 
 function JobSnip() {
   const [resumeFile, setResumeFile] = useState(null);
   const [jobDescription, setJobDescription] = useState('');
   const [dragActive, setDragActive] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [message, setMessage] = useState({ type: '', text: '' }); // For inline messages
+  const [message, setMessage] = useState({ type: '', text: '' }); 
 
   const validTypes = [
     'application/pdf',
@@ -55,6 +58,15 @@ function JobSnip() {
     }
   };
 
+  const readFileAsArrayBuffer = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject('Failed to read file');
+      reader.readAsArrayBuffer(file);
+    });
+  };
+
   const handleAnalyze = async () => {
     resetMessage();
     if (!resumeFile || !jobDescription.trim()) {
@@ -63,14 +75,90 @@ function JobSnip() {
     }
 
     setIsAnalyzing(true);
-    // Simulate analysis delay
-    setTimeout(() => {
-      setIsAnalyzing(false);
+
+    try {
+      let resumeText = '';
+      console.log('File type:', resumeFile.type);
+      console.log('File size:', resumeFile.size);
+
+      if (resumeFile.type === 'application/pdf') {
+        console.log('Processing PDF...');
+        const arrayBuffer = await readFileAsArrayBuffer(resumeFile);
+        console.log('ArrayBuffer created, size:', arrayBuffer.byteLength);
+        
+        const loadingTask = pdfjsLib.getDocument({
+          data: arrayBuffer,
+          // Remove cMap configuration as it might cause issues
+        });
+        
+        const pdf = await loadingTask.promise;
+        console.log('PDF loaded, pages:', pdf.numPages);
+        
+        const texts = [];
+        for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+          try {
+            console.log(`Processing page ${pageNum}...`);
+            const page = await pdf.getPage(pageNum);
+            const content = await page.getTextContent();
+            const pageText = content.items
+              .map(item => item.str || '')
+              .filter(str => str.trim().length > 0)
+              .join(' ');
+            
+            if (pageText.trim()) {
+              texts.push(pageText.trim());
+            }
+            console.log(`Page ${pageNum} processed, characters: ${pageText.length}`);
+          } catch (pageErr) {
+            console.error(`Error processing page ${pageNum}:`, pageErr);
+            // Continue with other pages
+          }
+        }
+
+        resumeText = texts.join('\n\n');
+        console.log('Total extracted text length:', resumeText.length);
+        
+      } else if (
+        resumeFile.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      ) {
+        console.log('Processing DOCX...');
+        const arrayBuffer = await readFileAsArrayBuffer(resumeFile);
+        const result = await mammoth.extractRawText({ arrayBuffer });
+        resumeText = result.value || '';
+        console.log('DOCX extracted text length:', resumeText.length);
+        
+      } else if (resumeFile.type === 'application/msword') {
+        console.log('Processing DOC...');
+        const arrayBuffer = await readFileAsArrayBuffer(resumeFile);
+        const result = await mammoth.extractRawText({ arrayBuffer });
+        resumeText = result.value || '';
+        console.log('DOC extracted text length:', resumeText.length);
+        
+      } else {
+        throw new Error(`Unsupported file type: ${resumeFile.type}`);
+      }
+
+      if (!resumeText || resumeText.trim().length === 0) {
+        throw new Error('No text could be extracted from the document. The file might be image-based or corrupted.');
+      }
+
+      console.log('Final extracted text preview:', resumeText.substring(0, 200));
+      
       setMessage({
         type: 'success',
-        text: `Analysis complete! Resume: ${resumeFile.name}, Job description length: ${jobDescription.length} characters.`,
+        text: `Extraction successful! Characters extracted: ${resumeText.length}. Preview: "${resumeText.substring(0, 100)}${resumeText.length > 100 ? '...' : ''}"`,
       });
-    }, 2000);
+      
+    } catch (err) {
+      console.error('Full error details:', err);
+      const errorMessage = err.message || 'Unknown error occurred';
+      setMessage({ 
+        type: 'error', 
+        text: `Failed to extract text: ${errorMessage}. Check console for details.` 
+      });
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   return (
