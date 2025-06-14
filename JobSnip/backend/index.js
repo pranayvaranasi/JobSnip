@@ -45,6 +45,7 @@ app.get('/', (req, res) => {
 });
 
 // Main analysis endpoint
+
 app.post('/analyze', async (req, res) => {
   console.log('--- /analyze route hit ---');
   console.log('Request headers:', req.headers);
@@ -53,44 +54,43 @@ app.post('/analyze', async (req, res) => {
   try {
     const { resumeText, jobDescription } = req.body;
     
-    // Input validation
+    // Enhanced input validation
     if (!resumeText || !jobDescription) {
-      console.log('Missing required fields');
-      console.log('Has resumeText:', !!resumeText);
-      console.log('Has jobDescription:', !!jobDescription);
-      
       return res.status(400).json({ 
-        error: 'Both resumeText and jobDescription are required.',
-        received: {
-          hasResumeText: !!resumeText,
-          hasJobDescription: !!jobDescription
+        error: 'Missing required fields',
+        details: {
+          resumeText: !resumeText ? 'Resume text is required' : undefined,
+          jobDescription: !jobDescription ? 'Job description is required' : undefined
         }
       });
     }
 
     if (typeof resumeText !== 'string' || typeof jobDescription !== 'string') {
-      console.log('Invalid data types');
       return res.status(400).json({ 
-        error: 'resumeText and jobDescription must be strings.',
-        types: {
-          resumeText: typeof resumeText,
-          jobDescription: typeof jobDescription
+        error: 'Invalid input types',
+        details: {
+          resumeText: typeof resumeText !== 'string' ? `Expected string, got ${typeof resumeText}` : undefined,
+          jobDescription: typeof jobDescription !== 'string' ? `Expected string, got ${typeof jobDescription}` : undefined
         }
       });
     }
 
-    console.log('Resume text length:', resumeText.length);
-    console.log('Job description length:', jobDescription.length);
+    if (resumeText.length > 10000 || jobDescription.length > 5000) {
+      return res.status(400).json({ 
+        error: 'Input size exceeds limits',
+        details: {
+          resumeText: resumeText.length > 10000 ? 'Resume text exceeds 10000 character limit' : undefined,
+          jobDescription: jobDescription.length > 5000 ? 'Job description exceeds 5000 character limit' : undefined
+        }
+      });
+    }
 
-    // Check API key
     if (!process.env.OPENROUTER_API_KEY) {
-      console.error('OpenRouter API key not found');
       return res.status(500).json({ 
         error: 'Server configuration error: API key not configured.' 
       });
     }
 
-    // Prepare the prompt
     const prompt = `
 You are an expert resume analyzer. Compare the following resume with the job description and provide analysis in VALID JSON format only.
 
@@ -100,19 +100,16 @@ ${resumeText.substring(0, 3000)}${resumeText.length > 3000 ? '...[truncated]' : 
 JOB DESCRIPTION:
 ${jobDescription.substring(0, 2000)}${jobDescription.length > 2000 ? '...[truncated]' : ''}
 
-Respond with ONLY valid JSON in this exact format (no markdown, no extra text):
+Respond with ONLY valid JSON in this exact format:
 {
-  "matchScore": ,
+  "matchScore": number,
   "missingSkills": ["Skill1","Skill2","Skilln"],
   "improvements": ["point1", "point2", "pointn"]
 }`;
 
-    console.log('Sending request to OpenRouter API...');
-    
-    // Make API request with timeout
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
-    
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
     try {
       const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
@@ -124,10 +121,7 @@ Respond with ONLY valid JSON in this exact format (no markdown, no extra text):
         },
         body: JSON.stringify({
           model: 'qwen/qwen-2.5-72b-instruct',
-          messages: [{ 
-            role: 'user', 
-            content: prompt 
-          }],
+          messages: [{ role: 'user', content: prompt }],
           temperature: 0.3,
           max_tokens: 1000,
         }),
@@ -136,24 +130,18 @@ Respond with ONLY valid JSON in this exact format (no markdown, no extra text):
 
       clearTimeout(timeoutId);
       
-      console.log('OpenRouter response status:', response.status);
-      console.log('OpenRouter response headers:', Object.fromEntries(response.headers.entries()));
-      
       if (!response.ok) {
         const errText = await response.text();
-        console.error('OpenRouter API error:', response.status, errText);
-        
-        let errorMessage = 'AI service error';
+        let errorMessage;
         if (response.status === 401) {
-          errorMessage = 'API authentication failed. Please check server configuration.';
+          errorMessage = 'API authentication failed. Please contact support.';
         } else if (response.status === 429) {
           errorMessage = 'Rate limit exceeded. Please try again later.';
         } else if (response.status === 400) {
-          errorMessage = 'Invalid request to AI service.';
-        } else if (response.status >= 500) {
+          errorMessage = 'Invalid request to AI service. Please check your inputs.';
+        } else {
           errorMessage = 'AI service is temporarily unavailable.';
         }
-        
         return res.status(response.status >= 500 ? 500 : 400).json({ 
           error: errorMessage,
           details: process.env.NODE_ENV === 'development' ? errText : undefined
@@ -161,80 +149,52 @@ Respond with ONLY valid JSON in this exact format (no markdown, no extra text):
       }
 
       const data = await response.json();
-      console.log('OpenRouter response received');
-      
       const content = data.choices?.[0]?.message?.content;
-      console.log('Raw AI response:', content);
-
       if (!content) {
-        console.error('No content in AI response');
         return res.status(500).json({ 
           error: 'No response content from AI service.' 
         });
       }
 
-     
-      let structured = {};
+      let structured;
       try {
-        
-        const cleaned = content
-          .replace(/```json/gi, '')
-          .replace(/```/g, '')
-          .replace(/^\s*[\r\n]/gm, '') 
-          .trim();
-        
-        console.log('Cleaned content:', cleaned);
+        const cleaned = content.replace(/```json/gi, '').replace(/```/g, '').replace(/^\s*[\r\n]/gm, '').trim();
         structured = JSON.parse(cleaned);
         
-        // Validate structure
         if (typeof structured.matchScore !== 'number' || 
             !Array.isArray(structured.missingSkills) || 
             !Array.isArray(structured.improvements)) {
           throw new Error('Invalid response structure from AI');
         }
         
-        // Ensure valid range
         structured.matchScore = Math.max(0, Math.min(100, Math.round(structured.matchScore)));
-        
       } catch (parseError) {
-        console.error('JSON parse error:', parseError);
-        console.error('Content that failed to parse:', content);
-        
-        // Fallback response
         structured = {
           matchScore: 50,
-          missingSkills: ["Analysis parsing failed - please try again"],
-          improvements: ["Unable to provide specific recommendations due to parsing error"]
+          missingSkills: ["Analysis failed due to invalid AI response"],
+          improvements: ["Please try again or contact support"]
         };
       }
 
-      console.log('Final response:', structured);
       res.json(structured);
-      
     } catch (fetchError) {
       clearTimeout(timeoutId);
-      
       if (fetchError.name === 'AbortError') {
-        console.error('Request timeout');
         return res.status(408).json({ 
           error: 'Request timeout - the AI service took too long to respond.' 
         });
       }
-      
-      throw fetchError; 
+      throw fetchError;
     }
-    
   } catch (err) {
-    console.error('Server error:', err);
-    console.error('Error stack:', err.stack);
-    
     res.status(500).json({ 
       error: 'Internal server error occurred while processing your request.',
-      message: err.message,
-      details: process.env.NODE_ENV === 'development' ? err.stack : undefined
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined
     });
   }
 });
+
+
 
 // 404 handler for unmatched routes
 app.use('*', (req, res) => {
