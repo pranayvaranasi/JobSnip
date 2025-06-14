@@ -1,0 +1,5 @@
+{"error":"Something went wrong"}--_curl_--"prompt":"Compare the following resume with this job description. Provide a match score (0-100)
+--_curl_-- list missing skills
+--_curl_-- and suggest improvements.nnResume: Experienced software engineer with expertise in JavaScript and Node.js.nJob Description: Looking for a software engineer with experience in JavaScript
+--_curl_-- Node.js
+--_curl_-- and Kubernetes."
